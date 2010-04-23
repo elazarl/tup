@@ -26,8 +26,25 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/ptrace.h>
+#include <sys/syscall.h>
+#include <sys/user.h>
 
 #define MAX_JOBS 65535
+
+#if defined(__i386__)
+#define SYSCALL_REG orig_eax
+#define SYSCALL_RET eax
+#define SYSCALL_ARG0 ebx
+#define SYSCALL_ARG1 ecx
+#elif defined(__x86_64__)
+#define SYSCALL_REG orig_rax
+#define SYSCALL_RET rax
+#define SYSCALL_ARG0 rdi
+#define SYSCALL_ARG1 rsi
+#else
+#error Unsupported arch in tup/updater.c
+#endif
 
 static int update_tup_config(void);
 static int process_create_nodes(void);
@@ -83,7 +100,6 @@ static const char *signal_err[] = {
 struct worker_thread {
 	pthread_t pid;
 	int sock;        /* 1 sock and no shoes? What a life... */
-	int lockfd;      /* lock fd for .tup/jobXXXX/.tuplock */
 	struct graph *g; /* This should only be used in create_work() and todo_work */
 };
 
@@ -149,8 +165,6 @@ int updater(int argc, char **argv, int phase)
 			tup_main_progress("No filesystem scan - monitor is running.\n");
 		}
 	}
-	if(server_init() < 0)
-		return -1;
 	if(update_tup_config() < 0)
 		return -1;
 	if(phase == 1) /* Collect underpants */
@@ -535,23 +549,8 @@ static int execute_graph(struct graph *g, int keep_going, int jobs,
 		return -2;
 	}
 	for(x=0; x<jobs; x++) {
-		char lockname[] = "jobXXXX/.tuplock";
 		workers[x].g = g;
 		workers[x].sock = socks[1];
-		snprintf(lockname+3, 5, "%04x", x);
-		lockname[7] = 0;
-		if(mkdirat(tupfd, lockname, 0777) < 0) {
-			if(errno != EEXIST) {
-				perror("mkdirat");
-				return -2;
-			}
-		}
-		lockname[7] = '/';
-		workers[x].lockfd = openat(tupfd, lockname, O_RDWR|O_CREAT, 0644);
-		if(workers[x].lockfd < 0) {
-			perror(lockname);
-			return -2;
-		}
 		if(pthread_create(&workers[x].pid, NULL, work_func, &workers[x]) < 0) {
 			perror("pthread_create");
 			return -2;
@@ -661,7 +660,6 @@ out:
 	}
 	for(x=0; x<jobs; x++) {
 		pthread_join(workers[x].pid, NULL);
-		close(workers[x].lockfd);
 	}
 	free(workers); /* Viva la revolucion! */
 	close(socks[0]);
@@ -722,7 +720,6 @@ static void *update_work(void *arg)
 		perror("malloc");
 		return NULL;
 	}
-	s->lockfd = wt->lockfd;
 
 	while(recv(wt->sock, &n, sizeof(n), 0) == sizeof(n)) {
 		struct edge *e;
@@ -828,6 +825,331 @@ static int unlink_outputs(int dfd, struct node *n)
 	return 0;
 }
 
+static int ignore_file(const char *file)
+{
+	if(strncmp(file, "/tmp/", 5) == 0)
+		return 1;
+	if(strncmp(file, "/dev/", 5) == 0)
+		return 1;
+	return 0;
+}
+
+static int sendall(int sd, const void *buf, size_t len)
+{
+	size_t sent = 0;
+	const char *cur = buf;
+
+	while(sent < len) {
+		int rc;
+		rc = send(sd, cur + sent, len - sent, 0);
+		if(rc < 0) {
+			perror("send");
+			return -1;
+		}
+		sent += rc;
+	}
+	return 0;
+}
+
+static int tup_send_event(int sd, const char *file, int len, const char *file2, int len2, int at)
+{
+	struct access_event event;
+
+	if(!file) {
+		fprintf(stderr, "tup_send_event internal error: file can't be NUL\n");
+		return -1;
+	}
+	if(!file2) {
+		fprintf(stderr, "tup_send_event internal error: file2 can't be NUL\n");
+		return -1;
+	}
+
+	if(ignore_file(file))
+		return 0;
+
+	event.at = at;
+	event.len = len;
+	event.len2 = len2;
+	if(sendall(sd, &event, sizeof(event)) < 0)
+		return -1;
+	if(sendall(sd, file, event.len) < 0)
+		return -1;
+	if(sendall(sd, file2, event.len2) < 0)
+		return -1;
+	return 0;
+}
+
+static int peek_string(char *s, int *len, pid_t pid, long ptr)
+{
+	int x;
+
+	for(x=0; x<*len; x += sizeof(long)) {
+		int y;
+		long rc;
+
+		rc = ptrace(PTRACE_PEEKDATA, pid, ptr+x, NULL);
+		if(rc == -1)
+			return -1;
+		*(long*)(s + x) = rc;
+		for(y=0; y<(signed)sizeof(long); y++) {
+			if(s[x+y] == 0) {
+				*len = x+y;
+				return 0;
+			}
+		}
+	}
+	return -1;
+}
+
+struct trace_info {
+	struct list_head list;
+	int pid;
+	int flags;
+	int insyscall;
+	char path1[PATH_MAX];
+	char path2[PATH_MAX];
+	int p1len;
+	int p2len;
+};
+
+static int do_ptracing(pid_t child, struct server *s)
+{
+	int retval = 0;
+	struct trace_info *ti;
+	LIST_HEAD(tinfo_list);
+
+	waitpid(child, NULL, 0);
+	if(ptrace(PTRACE_SETOPTIONS, child, NULL, PTRACE_O_TRACEFORK | PTRACE_O_TRACEVFORK | PTRACE_O_TRACECLONE | PTRACE_O_TRACESYSGOOD) == -1) {
+		perror("ptrace(PTRACE_SETOPTIONS)");
+		return -1;
+	}
+	if(ptrace(PTRACE_SYSCALL, child, NULL, NULL) == -1) {
+		perror("ptrace(PTRACE_SYSCALL)");
+		return -1;
+	}
+
+	while(1) {
+		int waited_pid;
+		struct user_regs_struct regs;
+		int status;
+
+		waited_pid = wait(&status);
+		if(waited_pid < 0) {
+			if(errno == ECHILD) {
+				while(!list_empty(&tinfo_list)) {
+					ti = list_entry(tinfo_list.next, struct trace_info, list);
+					list_del(&ti->list);
+					free(ti);
+				}
+				return retval;
+			}
+			perror("wait");
+			goto out_err;
+		}
+
+		list_for_each_entry(ti, &tinfo_list, list) {
+			if(ti->pid == waited_pid)
+				goto found;
+		}
+		ti = malloc(sizeof *ti);
+		if(!ti) {
+			perror("malloc");
+			goto out_err;
+		}
+		ti->pid = waited_pid;
+		ti->insyscall = 0;
+		ti->flags = 0;
+		ti->path1[0] = 0;
+		ti->path2[0] = 0;
+		list_add(&ti->list, &tinfo_list);
+found:
+
+		if(WIFEXITED(status)) {
+			retval = WEXITSTATUS(status);
+		} else if(WIFSIGNALED(status)) {
+			int sig = WTERMSIG(status);
+			const char *errmsg = "Unknown signal";
+
+			if(sig >= 0 && sig < ARRAY_SIZE(signal_err) && signal_err[sig])
+				errmsg = signal_err[sig];
+			fprintf(stderr, " *** Killed by signal %i (%s)\n", sig, errmsg);
+			retval = -1;
+		} else if(WIFSTOPPED(status) && WSTOPSIG(status) == (SIGTRAP | 0x80)) {
+			if(ptrace(PTRACE_GETREGS, waited_pid, NULL, &regs) == -1) {
+				perror("ptrace(PTRACE_GETREGS)");
+				goto out_err;
+			}
+			if(regs.SYSCALL_REG == SYS_open) {
+				if(ti->insyscall == 0) {
+					ti->flags = regs.SYSCALL_ARG1;
+					ti->p1len = sizeof(ti->path1);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+
+					ti->insyscall = 1;
+				} else {
+					int magic_len = sizeof(TUP_VAR_MAGIC) - 1;
+					if(strncmp(ti->path1, TUP_VAR_MAGIC, magic_len) == 0) {
+						char *tmp;
+						tmp = ti->path1 + magic_len;
+						if(tup_send_event(s->sd[1], tmp, ti->p1len - magic_len, "", 0, ACCESS_VAR) < 0)
+							goto out_err;
+					}
+					if((signed long)regs.SYSCALL_RET > 0) {
+						if((ti->flags & O_WRONLY) || (ti->flags & O_RDWR)) {
+							if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_WRITE) < 0)
+								goto out_err;
+						} else {
+							if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_READ) < 0)
+								goto out_err;
+						}
+					} else {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_GHOST) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+			} else if(regs.SYSCALL_REG == SYS_rename) {
+				if(ti->insyscall == 0) {
+					ti->p1len = sizeof(ti->path1);
+					ti->p2len = sizeof(ti->path2);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+					if(peek_string(ti->path2, &ti->p2len, waited_pid, regs.SYSCALL_ARG1) < 0)
+						goto out_err;
+					ti->insyscall = 1;
+				} else {
+					if(regs.SYSCALL_RET == 0) {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, ti->path2, ti->p2len, ACCESS_RENAME) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+			} else if(regs.SYSCALL_REG == SYS_stat) {
+				if(ti->insyscall == 0) {
+					ti->p1len = sizeof(ti->path1);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+
+					ti->insyscall = 1;
+				} else {
+					if((signed long)regs.SYSCALL_RET < 0) {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_GHOST) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+#ifdef SYS_stat64
+			} else if(regs.SYSCALL_REG == SYS_stat64) {
+				if(ti->insyscall == 0) {
+					ti->p1len = sizeof(ti->path1);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+
+					ti->insyscall = 1;
+				} else {
+					if((signed long)regs.SYSCALL_RET < 0) {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_GHOST) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+#endif
+			} else if(regs.SYSCALL_REG == SYS_symlink) {
+				if(ti->insyscall == 0) {
+					ti->p1len = sizeof(ti->path1);
+					ti->p2len = sizeof(ti->path2);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+					if(peek_string(ti->path2, &ti->p2len, waited_pid, regs.SYSCALL_ARG1) < 0)
+						goto out_err;
+
+					ti->insyscall = 1;
+				} else {
+					if(regs.SYSCALL_RET == 0) {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, ti->path2, ti->p2len, ACCESS_SYMLINK) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+			} else if(regs.SYSCALL_REG == SYS_unlink) {
+				if(ti->insyscall == 0) {
+					ti->p1len = sizeof(ti->path1);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+
+					ti->insyscall = 1;
+				} else {
+					if(regs.SYSCALL_RET == 0) {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_UNLINK) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+			} else if(regs.SYSCALL_REG == SYS_unlinkat) {
+				if(ti->insyscall == 0) {
+					if((signed)regs.SYSCALL_ARG0 != AT_FDCWD) {
+						fprintf(stderr, "tup error: unlinkat() not supported unless dirfd == AT_FDCWD\n");
+						goto out_err;
+					}
+					ti->p1len = sizeof(ti->path1);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG1) < 0)
+						goto out_err;
+
+					ti->insyscall = 1;
+				} else {
+					if(regs.SYSCALL_RET == 0) {
+						if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_UNLINK) < 0)
+							goto out_err;
+					}
+					ti->insyscall = 0;
+				}
+			} else if(regs.SYSCALL_REG == SYS_execve) {
+				/* execve is funky, since it will show up as
+				 * a single return from ptrace, whereas all the
+				 * others have two returns (one before the call
+				 * and one after). It seems the data we want
+				 * is in a single call, so just check if the
+				 * register contains a value, and don't fiddle
+				 * with insyscall.
+				 */
+				if(regs.SYSCALL_ARG0) {
+					ti->p1len = sizeof(ti->path1);
+					if(peek_string(ti->path1, &ti->p1len, waited_pid, regs.SYSCALL_ARG0) < 0)
+						goto out_err;
+					if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_READ) < 0)
+						goto out_err;
+				}
+			}
+			if(ptrace(PTRACE_SYSCALL, waited_pid, NULL, NULL) == -1) {
+				perror("ptrace(PTRACE_SYSCALL)");
+				goto out_err;
+			}
+		} else if(WIFSTOPPED(status)) {
+			int sig;
+
+			sig = WSTOPSIG(status);
+			/* Not sure why we still get SIGTRAP without the magic
+			 * 0x80 flag set, but if we pass it along to the child
+			 * then things break.
+			 */
+			if(sig == SIGTRAP)
+				sig = 0;
+			if(ptrace(PTRACE_SYSCALL, waited_pid, NULL, sig) == -1) {
+				perror("ptrace(PTRACE_SYSCALL)");
+				goto out_err;
+			}
+		}
+	}
+out_err:
+	while(!list_empty(&tinfo_list)) {
+		ti = list_entry(tinfo_list.next, struct trace_info, list);
+		list_del(&ti->list);
+		free(ti);
+	}
+	return -1;
+}
+
 static int update(struct node *n, struct server *s)
 {
 	int status;
@@ -878,6 +1200,15 @@ static int update(struct node *n, struct server *s)
 		fprintf(stderr, "Error starting update server.\n");
 		goto err_close_dfd;
 	}
+
+	/* Make sure stdout/stderr are flushed before fork. Otherwise the
+	 * buffers exist in both processes, which can affect the output (ie:
+	 * text is duplicated). According to a random person on the Internet,
+	 * this should've been obvious from reading the man pages. I still
+	 * haven't found which man page this is.
+	 */
+	fflush(stdout);
+	fflush(stderr);
 	pid = fork();
 	if(pid < 0) {
 		perror("fork");
@@ -897,10 +1228,28 @@ static int update(struct node *n, struct server *s)
 			perror("fchdir");
 			exit(1);
 		}
-		server_setenv(s, vardict_fd);
-		execl("/bin/sh", "/bin/sh", "-e", "-c", name, NULL);
-		perror("execl");
-		exit(1);
+
+		pid = fork();
+		if(pid < 0) {
+			perror("fork");
+			exit(1);
+		}
+		if(pid == 0) {
+			char fd_name[32];
+			if(ptrace(PTRACE_TRACEME, 0, NULL, NULL) == -1) {
+				perror("ptrace");
+				exit(1);
+			}
+			snprintf(fd_name, sizeof(fd_name), "%i", vardict_fd);
+			fd_name[31] = 0;
+			setenv(TUP_VARDICT_NAME, fd_name, 1);
+
+			execl("/bin/sh", "/bin/sh", "-e", "-c", name, NULL);
+			perror("execl");
+			exit(1);
+		}
+
+		exit(do_ptracing(pid, s));
 	}
 	if(waitpid(pid, &status, 0) < 0) {
 		perror("waitpid");

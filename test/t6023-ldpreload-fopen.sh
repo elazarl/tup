@@ -10,7 +10,7 @@
 cat > Tupfile << HERE
 : lib.c |> gcc -fPIC -shared %f -o %o |> lib.so
 : prog.c lib.so |> gcc %f -o %o |> prog
-: prog |> LD_LIBRARY_PATH=. ./%f |>
+: prog lib.so |> LD_LIBRARY_PATH=. ./%f |>
 HERE
 cat > lib.c << HERE
 #include <stdio.h>

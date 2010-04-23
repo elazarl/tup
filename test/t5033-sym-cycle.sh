@@ -11,7 +11,7 @@ cat > Tupfile << HERE
 : |> if [ -f a ]; then cat a 2>/dev/null; else echo yo; fi > %o |> output.txt
 HERE
 tup touch Tupfile
-update
+update_fail_msg "Max symlink loop count"
 echo yo | diff - output.txt
 
 cat > Tupfile << HERE

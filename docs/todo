@@ -1,6 +1,8 @@
 FD_CLOEXEC flag on file descriptors?
  - also close stdin on subprocesses?
 
+add sys_access?
+
 automatically backup db before updating to new version
 
 remove var/sed commands in favor of an external client?
@@ -132,6 +134,8 @@ make 'tup g .gitignore' or 'tup g .git/refs/foo' have a better error message
  - I was trying to do 'find . -type f | xargs tup g' to just show files
 
 touch ok.o; rm -f ok.o ok.c; tup upd shouldn't keep ok.o in the dag
+
+t6023: avoid specifying lib.so dependency when running prog? ie: instead of reporting missing input dependency, check if it is listed as an input for the commands one level back (and make sure if that dependency goes away, then we still get a missing input dep error for the prog rule)
 
 html:
   proof: no clean target

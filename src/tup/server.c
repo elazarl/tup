@@ -1,7 +1,6 @@
 #include "server.h"
 #include "file.h"
 #include "debug.h"
-#include "getexecwd.h"
 #include "fileio.h"
 #include "db.h"
 #include <stdio.h>
@@ -12,40 +11,6 @@
 
 static void *message_thread(void *arg);
 static int recvall(int sd, void *buf, size_t len);
-
-static char ldpreload_path[PATH_MAX];
-
-int server_init(void)
-{
-	if(snprintf(ldpreload_path, sizeof(ldpreload_path),
-		    "%s/tup-ldpreload.so",
-		    getexecwd()) >= (signed)sizeof(ldpreload_path)) {
-		fprintf(stderr, "Error: path for tup-ldpreload.so library is "
-			"too long.\n");
-		return -1;
-	}
-	return 0;
-}
-
-void server_setenv(struct server *s, int vardict_fd)
-{
-	char fd_name[32];
-	snprintf(fd_name, sizeof(fd_name), "%i", s->sd[1]);
-	fd_name[31] = 0;
-	setenv(TUP_SERVER_NAME, fd_name, 1);
-	snprintf(fd_name, sizeof(fd_name), "%i", vardict_fd);
-	fd_name[31] = 0;
-	setenv(TUP_VARDICT_NAME, fd_name, 1);
-	snprintf(fd_name, sizeof(fd_name), "%i", s->lockfd);
-	fd_name[31] = 0;
-	setenv(TUP_LOCK_NAME, fd_name, 1);
-#ifdef __APPLE__
-	setenv("DYLD_FORCE_FLAT_NAMESPACE", "", 1);
-	setenv("DYLD_INSERT_LIBRARIES", ldpreload_path, 1);
-#else
-	setenv("LD_PRELOAD", ldpreload_path, 1);
-#endif
-}
 
 int start_server(struct server *s)
 {

@@ -396,7 +396,15 @@ int tup_entry_change_name_dt(tupid_t tupid, const char *new_name,
 
 int tup_entry_sym_follow(struct tup_entry *tent)
 {
+	const int MAX_TRIES = 50;
+	int x = 0;
 	while(tent->sym != -1) {
+		x++;
+		if(x >= MAX_TRIES) {
+			fprintf(stderr, "Error: Max symlink loop count (%i) exceeded. Last entry is %lli\n", MAX_TRIES, tent->tnode.tupid);
+			tup_db_print(stderr, tent->tnode.tupid);
+			return -1;
+		}
 		if(tent->symlink == NULL) {
 			if(tup_entry_resolve_sym(tent) < 0)
 				return -1;

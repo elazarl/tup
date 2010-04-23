@@ -1,11 +1,10 @@
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <dlfcn.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
-#include <sys/socket.h>
 #include "tup_config_vars.h"
 #include "tup/access_event.h"
 
@@ -17,7 +16,6 @@ struct vardict {
 	void *map;
 };
 static void tup_var_init(void) __attribute__((constructor));
-static void (*tup_send_event_f)(const char *file, int len, const char *file2, int len2, int at);
 static int init_vardict(int fd);
 
 static struct vardict tup_vars;
@@ -26,12 +24,6 @@ static void tup_var_init(void)
 {
 	char *path;
 	int vardict_fd;
-
-	tup_send_event_f = dlsym(RTLD_DEFAULT, "tup_send_event");
-	if(!tup_send_event_f) {
-		fprintf(stderr, "tup client error: Unable to resolve tup_send_event symbol (is tup-ldpreload.so preloaded?)\n");
-		abort();
-	}
 
 	path = getenv(TUP_VARDICT_NAME);
 	if(!path) {
@@ -71,7 +63,7 @@ static int init_vardict(int fd)
 
 	expected += sizeof(unsigned int);
 	if(tup_vars.len < expected) {
-		fprintf(stderr, "Error: var-tree should be at least sizeof(unsigned int) bytes, but got %i bytes\n", tup_vars.len);
+		fprintf(stderr, "tup client error: var-tree should be at least sizeof(unsigned int) bytes, but got %i bytes\n", tup_vars.len);
 		return -1;
 	}
 	tup_vars.map = mmap(NULL, tup_vars.len, PROT_READ, MAP_PRIVATE, fd, 0);
@@ -85,7 +77,7 @@ static int init_vardict(int fd)
 	expected += sizeof(unsigned int) * tup_vars.num_entries;
 	tup_vars.entries = (const char*)tup_vars.map + expected;
 	if(tup_vars.len < expected) {
-		fprintf(stderr, "Error: var-tree should have at least %i bytes to accommodate the index, but got %i bytes\n", expected, tup_vars.len);
+		fprintf(stderr, "tup client error: var-tree should have at least %i bytes to accommodate the index, but got %i bytes\n", expected, tup_vars.len);
 		return -1;
 	}
 
@@ -100,11 +92,20 @@ const char *tup_config_var(const char *key, int keylen)
 	const char *p;
 	const char *k;
 	int bytesleft;
+	char magic[] = TUP_VAR_MAGIC;
+	char tmpfname[128];
 
 	if(keylen == -1)
 		keylen = strlen(key);
 
-	tup_send_event_f(key, keylen, "", 0, ACCESS_VAR);
+	if(keylen >= (signed)sizeof(tmpfname) - (signed)sizeof(magic)) {
+		fprintf(stderr, "tup client error: keylen of %i is too large for the tmp buffer.\n", keylen);
+	}
+	memcpy(tmpfname, magic, sizeof(magic));
+	memcpy(tmpfname + sizeof(magic)-1, key, keylen);
+	tmpfname[sizeof(magic) + keylen] = 0;
+	/* The open should always fail, but just in case wrap it in a close. */
+	close(open(tmpfname, O_RDONLY));
 	while(1) {
 		cur = (right - left) >> 1;
 		if(cur <= 0)
@@ -114,7 +115,7 @@ const char *tup_config_var(const char *key, int keylen)
 			break;
 
 		if(tup_vars.offsets[cur] >= tup_vars.len) {
-			fprintf(stderr, "Error: Offset for element %i is out of bounds.\n", cur);
+			fprintf(stderr, "tup client error: Offset for element %i is out of bounds.\n", cur);
 			break;
 		}
 		p = tup_vars.entries + tup_vars.offsets[cur];

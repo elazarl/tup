@@ -1,16 +1,13 @@
 #ifndef tup_access_event_h
 #define tup_access_event_h
 
-/** The environment variable used to pass the name of the UNIX socket server
- * to subprocesses.
- */
-#define TUP_SERVER_NAME "tup_master"
-
 /** The file descriptor for the variable dictionary. */
 #define TUP_VARDICT_NAME "tup_vardict"
 
-/** Lock to ensure synchronization with the ldpreload socket. */
-#define TUP_LOCK_NAME "tup_lock"
+/* Virtual path where the client will try to "open" an @-variable to indicate
+ * that the var is being used by a client program.
+ */
+#define TUP_VAR_MAGIC ".tup/@/"
 
 enum access_type {
 	ACCESS_READ,

@@ -8,7 +8,6 @@
 #include <unistd.h>
 #include "tup/config.h"
 #include "tup/lock.h"
-#include "tup/getexecwd.h"
 #include "tup/monitor.h"
 #include "tup/fileio.h"
 #include "tup/updater.h"
@@ -59,12 +58,6 @@ int main(int argc, char **argv)
 		return 0;
 	} else if(strcmp(argv[1], "stop") == 0) {
 		return stop_monitor();
-	}
-
-	if(init_getexecwd(argv[0]) < 0) {
-		fprintf(stderr, "Error: Unable to determine tup's "
-			"execution directory for shared libs.\n");
-		return 1;
 	}
 
 	if(tup_init() < 0)
