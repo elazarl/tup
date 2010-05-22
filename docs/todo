@@ -20,9 +20,6 @@ can we have the monitor kill the updater if a file modification is detected? or 
 
 unlinkat(AT_FDCWD) to do the same thing as unlink() (eg: rm -f foo.o in a badly behaving command should cause foo.o to be re-generated)?
 
-recursive grep kills monitor
- - print message when monitor exits?
-
 kill monitor if you ctrl-c twice? (maybe SIGHUP?) that way user has to restart it, which should catch any out of place files
 
 will cp -Rp olddir newdir break everything if olddir already has a bunch of stuff compiled in it? - try --seriously-overwrite-outputfiles flag again? I forget why I didn't finish that.
@@ -135,7 +132,9 @@ make 'tup g .gitignore' or 'tup g .git/refs/foo' have a better error message
 
 touch ok.o; rm -f ok.o ok.c; tup upd shouldn't keep ok.o in the dag
 
-t6023: avoid specifying lib.so dependency when running prog? ie: instead of reporting missing input dependency, check if it is listed as an input for the commands one level back (and make sure if that dependency goes away, then we still get a missing input dep error for the prog rule)
+allow 'tup upd foo.o' to construct a partial DAG only for things that eventually point to foo.o (and maybe print out the number of commands that were skipped)
+
+check for transitive dependencies (eg: prog links foo.so, and foo.so links to bar.so - need to specify both foo.so and bar.so as deps to prog, which is annoying)
 
 html:
   proof: no clean target
