@@ -103,7 +103,7 @@ const char *tup_config_var(const char *key, int keylen)
 	}
 	memcpy(tmpfname, magic, sizeof(magic));
 	memcpy(tmpfname + sizeof(magic)-1, key, keylen);
-	tmpfname[sizeof(magic) + keylen] = 0;
+	tmpfname[sizeof(magic) - 1 + keylen] = 0;
 	/* The open should always fail, but just in case wrap it in a close. */
 	close(open(tmpfname, O_RDONLY));
 	while(1) {
