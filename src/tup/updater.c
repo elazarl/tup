@@ -995,7 +995,7 @@ found:
 						if(tup_send_event(s->sd[1], tmp, ti->p1len - magic_len, "", 0, ACCESS_VAR) < 0)
 							goto out_err;
 					}
-					if((signed long)regs.SYSCALL_RET > 0) {
+					if((signed long)regs.SYSCALL_RET >= 0) {
 						if((ti->flags & O_WRONLY) || (ti->flags & O_RDWR)) {
 							if(tup_send_event(s->sd[1], ti->path1, ti->p1len, "", 0, ACCESS_WRITE) < 0)
 								goto out_err;
@@ -1244,6 +1244,12 @@ static int update(struct node *n, struct server *s)
 			fd_name[31] = 0;
 			setenv(TUP_VARDICT_NAME, fd_name, 1);
 
+			/* Close down stdin - it can't reliably be used during
+			 * the build (for example, when building in parallel,
+			 * multiple programs would have to fight over who gets
+			 * it, which is just nonsensical).
+			 */
+			close(0);
 			execl("/bin/sh", "/bin/sh", "-e", "-c", name, NULL);
 			perror("execl");
 			exit(1);
@@ -1259,11 +1265,11 @@ static int update(struct node *n, struct server *s)
 		goto err_cmd_failed;
 	}
 
+	pthread_mutex_lock(&db_mutex);
+	rc = write_files(n->tnode.tupid, n->tent->dt, dfd, name, &s->finfo, &warnings);
+	pthread_mutex_unlock(&db_mutex);
 	if(WIFEXITED(status)) {
 		if(WEXITSTATUS(status) == 0) {
-			pthread_mutex_lock(&db_mutex);
-			rc = write_files(n->tnode.tupid, n->tent->dt, dfd, name, &s->finfo, &warnings);
-			pthread_mutex_unlock(&db_mutex);
 			if(rc < 0)
 				goto err_cmd_failed;
 		} else {
@@ -1284,7 +1290,7 @@ static int update(struct node *n, struct server *s)
 	}
 
 	close(dfd);
-	return rc;
+	return 0;
 
 err_cmd_failed:
 	if(exit_status == -1)

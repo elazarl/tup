@@ -36,10 +36,6 @@ give user an option to kill an autoupdate updater
 
 t5057 - make 'boo' dependency change update file?
 
-check inputs and outputs even if command fails
- - make sure failed output doesn't become white if the command is removed
- - ie: compile foo.c because FOO is y, but it fails, then set FOO to n - foo.o should be removed
-
 progress bar looks dumb when you have numbers in the thousands because of the space between the second number and the ']', and then another space before the program
 
 .gitignore should be re-generated if removed by user?
@@ -135,6 +131,16 @@ touch ok.o; rm -f ok.o ok.c; tup upd shouldn't keep ok.o in the dag
 allow 'tup upd foo.o' to construct a partial DAG only for things that eventually point to foo.o (and maybe print out the number of commands that were skipped)
 
 check for transitive dependencies (eg: prog links foo.so, and foo.so links to bar.so - need to specify both foo.so and bar.so as deps to prog, which is annoying)
+ - will this work if you say:
+  foo.so |> a |> blah
+  blah |> b |>
+  and 'a' doesn't actually read from foo.so (so it's only a sticky link), and then
+  'b' does read from foo.so - if you remove foo.so from the |> a |> rule, will 'b'
+  re-execute to find that it's missing?
+
+merge windows support: http://github.com/jmckaskill/tup/tree/windows-port
+
+actually support chdir/fchdir?
 
 html:
   proof: no clean target
