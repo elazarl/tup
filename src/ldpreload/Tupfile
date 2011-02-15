@@ -1,6 +1,8 @@
 include_rules
 
 CFLAGS += $(FPIC)
+CFLAGS += $(LDPRELOAD_ARCH)
+
 srcs += *.c
 srcs += ../tup/access_event.c
 srcs += ../tup/flock.c

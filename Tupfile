@@ -1,6 +1,7 @@
 include_rules
 
 LDFLAGS_tup-ldpreload.so += $(FPIC)
+LDFLAGS_tup-ldpreload.so += $(LDPRELOAD_ARCH)
 LDFLAGS_tup-ldpreload.so += $(SHARED)
 LDFLAGS_tup-ldpreload.so += -ldl
 : src/ldpreload/*.o |> !ld |> tup-ldpreload.so
