@@ -14,10 +14,13 @@ static void *message_thread(void *arg);
 static int recvall(int sd, void *buf, size_t len);
 static int handle_chdir(struct server *s);
 
+#ifndef __APPLE__
 static char ldpreload_path[PATH_MAX];
+#endif
 
 int server_init(void)
 {
+#ifndef __APPLE__
 	if(snprintf(ldpreload_path, sizeof(ldpreload_path),
 		    "%s/tup-ldpreload.so",
 		    getexecwd()) >= (signed)sizeof(ldpreload_path)) {
@@ -25,6 +28,7 @@ int server_init(void)
 			"too long.\n");
 		return -1;
 	}
+#endif
 	return 0;
 }
 
@@ -42,7 +46,7 @@ void server_setenv(struct server *s, int vardict_fd)
 	setenv(TUP_LOCK_NAME, fd_name, 1);
 #ifdef __APPLE__
 	setenv("DYLD_FORCE_FLAT_NAMESPACE", "", 1);
-	setenv("DYLD_INSERT_LIBRARIES", ldpreload_path, 1);
+	setenv("DYLD_INSERT_LIBRARIES", "@loader_path/tup-ldpreload.so", 1);
 #else
 	setenv("LD_PRELOAD", ldpreload_path, 1);
 #endif
