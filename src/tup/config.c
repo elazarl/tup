@@ -9,6 +9,14 @@
 #include <unistd.h>
 #include <sys/stat.h>
 
+#if defined(__APPLE__) || defined(__FreeBSD__)
+  #include <sys/param.h>
+  #include <sys/sysctl.h>
+#elif defined (_WIN32)
+  #include <windows.h>
+#endif
+
+
 static char tup_wd[PATH_MAX];
 static int tup_wd_offset;
 static int tup_top_len;
@@ -96,4 +104,30 @@ int get_sub_dir_len(void)
 int tup_top_fd(void)
 {
 	return top_fd;
+}
+
+int get_number_of_cpu() {
+#if defined(__linux__) || defined(__sun__)
+	return sysconf(_SC_NPROCESSORS_ONLN);
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+	int nm[2];
+	size_t len = 4;
+	uint32_t count;
+
+	nm[0] = CTL_HW; nm[1] = HW_AVAILCPU;
+	sysctl(nm, 2, &count, &len, NULL, 0);
+
+	if(count < 1) {
+		nm[1] = HW_NCPU;
+		sysctl(nm, 2, &count, &len, NULL, 0);
+		if(count < 1) { count = 1; }
+	}
+	return count;
+#elif defined(_WIN32)
+	SYSTEM_INFO sysinfo;
+	GetSystemInfo(&sysinfo);
+	return sysinfo.dwNumberOfProcessors;
+#else
+	return 1;
+#endif
 }

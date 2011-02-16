@@ -205,6 +205,12 @@ static int init(int argc, char **argv)
 		return -1;
 	}
 
+	int num_jobs = get_number_of_cpu() + 1;
+	if (tup_db_config_set_int("num_jobs", num_jobs) != 0) {
+		perror("tup_db_config_set_int");
+		return -1;
+	}
+
 	if(creat(TUP_OBJECT_LOCK, 0666) < 0) {
 		perror(TUP_OBJECT_LOCK);
 		return -1;
