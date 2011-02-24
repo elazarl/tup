@@ -24,7 +24,8 @@ int server_init(void)
 
 #define SHSTR  "sh -c '"
 #define CMDSTR "CMD.EXE /Q /C "
-int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd)
+// TODO(marf) Implement process output redirection to *output
+int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd, FILE *output)
 {
 	int rc = -1;
 	DWORD return_code = 1;

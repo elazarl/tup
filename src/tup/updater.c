@@ -39,9 +39,10 @@ static int execute_graph(struct graph *g, int keep_going, int jobs,
 static void *create_work(void *arg);
 static void *update_work(void *arg);
 static void *todo_work(void *arg);
-static int update(struct node *n, struct server *s);
+static int update(struct node *n, struct server *s, FILE* output);
 static void tup_main_progress(const char *s);
 static void show_progress(int sum, int total, struct node *n);
+static void dump_file_to_stdout(FILE* file);
 
 static int do_keep_going;
 static int num_jobs;
@@ -92,6 +93,7 @@ struct worker_thread {
 	struct node *n;
 	struct node *retn;
 	int rc;
+	FILE *output;
 	int quit;
 };
 
@@ -639,6 +641,8 @@ static int execute_graph(struct graph *g, int keep_going, int jobs,
 		workers[x].n = NULL;
 		workers[x].retn = NULL;
 		workers[x].rc = -1;
+		// TOASK(marf) Or maybe create a tempfile one per worker and reuse it?
+		workers[x].output = NULL;
 		workers[x].quit = 0;
 		list_add(&workers[x].list, &free_list);
 
@@ -676,10 +680,6 @@ static int execute_graph(struct graph *g, int keep_going, int jobs,
 			goto check_empties;
 		}
 
-		if(n->tent->type == g->count_flags) {
-			show_progress(num_processed, g->num_nodes, n);
-			num_processed++;
-		}
 		list_del(&n->list);
 		active++;
 
@@ -691,6 +691,7 @@ static int execute_graph(struct graph *g, int keep_going, int jobs,
 		pthread_mutex_lock(&wt->lock);
 		wt->n = n;
 		wt->rc = -1;
+		wt->output = NULL;
 		pthread_cond_signal(&wt->cond);
 		pthread_mutex_unlock(&wt->lock);
 
@@ -711,6 +712,16 @@ check_empties:
 			wt->retn = NULL;
 			list_move(&wt->list, &free_list);
 			pthread_mutex_unlock(&list_mutex);
+
+			if(n->tent->type == g->count_flags) {
+				// TODO(anatol): pass wt->rc to show_progress so we can show errors with red color
+				show_progress(num_processed, g->num_nodes, n);
+				if (wt->output) {
+					// TODO(anatol): depending on wt->rc dump the output either to stdout or stderr
+					dump_file_to_stdout(wt->output);
+				}
+				num_processed++;
+			}
 			active--;
 
 			if(wt->rc < 0) {
@@ -779,16 +790,28 @@ static struct node *worker_wait(struct worker_thread *wt)
 	return wt->n;
 }
 
-static void worker_ret(struct worker_thread *wt, int rc)
+static void worker_ret(struct worker_thread *wt, int rc, FILE *output)
 {
 	wt->rc = rc;
 	wt->retn = wt->n;
 	wt->n = NULL;
+	wt->output = output;
 
 	pthread_mutex_lock(wt->list_mutex);
 	list_move(&wt->list, wt->fin_list);
 	pthread_cond_signal(wt->list_cond);
 	pthread_mutex_unlock(wt->list_mutex);
+}
+
+static void dump_file_to_stdout(FILE* file) {
+	rewind(file);
+	char buf[4096];
+	while (!feof(file)) {
+		size_t read_num = fread(buf, sizeof(char), sizeof(buf), file);
+		if(read_num)
+			fwrite(buf, sizeof(char), read_num, stdout);
+	}
+	fclose(file);
 }
 
 static void *create_work(void *arg)
@@ -823,7 +846,7 @@ static void *create_work(void *arg)
 		if(tup_db_unflag_create(n->tnode.tupid) < 0)
 			rc = -1;
 
-		worker_ret(wt, rc);
+		worker_ret(wt, rc, NULL);
 	}
 	return NULL;
 }
@@ -844,13 +867,16 @@ static void *update_work(void *arg)
 	while(1) {
 		struct edge *e;
 		int rc = 0;
+		FILE *output = NULL;
 
 		n = worker_wait(wt);
 		if(n == (void*)-1)
 			break;
 
 		if(n->tent->type == TUP_NODE_CMD) {
-			rc = update(n, s);
+			// TOASK(marf): we could create tmpfile() one per worker and reuse it instead of recreating for every command
+			output = tmpfile();
+			rc = update(n, s, output);
 
 			/* If the command succeeds, mark any next commands (ie:
 			 * our output files' output links) as modify in case we
@@ -892,7 +918,7 @@ static void *update_work(void *arg)
 			pthread_mutex_unlock(&db_mutex);
 		}
 
-		worker_ret(wt, rc);
+		worker_ret(wt, rc, output);
 	}
 	free(s);
 	return NULL;
@@ -912,7 +938,7 @@ static void *todo_work(void *arg)
 		if(n->tent->type == g->count_flags)
 			tup_db_print(stdout, n->tnode.tupid);
 
-		worker_ret(wt, 0);
+		worker_ret(wt, 0, NULL);
 	}
 	return NULL;
 }
@@ -934,7 +960,7 @@ static int unlink_outputs(int dfd, struct node *n)
 	return 0;
 }
 
-static int update(struct node *n, struct server *s)
+static int update(struct node *n, struct server *s, FILE* output)
 {
 	int dfd = -1;
 	const char *name = n->tent->name.s;
@@ -974,7 +1000,7 @@ static int update(struct node *n, struct server *s)
 	s->exit_status = -1;
 	s->exit_sig = -1;
 	s->dt = n->tent->dt;
-	if(server_exec(s, vardict_fd, dfd, name) < 0) {
+	if(server_exec(s, vardict_fd, dfd, name, output) < 0) {
 		fprintf(stderr, " *** Command %lli failed: %s\n", n->tnode.tupid, name);
 		goto err_close_dfd;
 	}

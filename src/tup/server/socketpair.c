@@ -55,7 +55,7 @@ int server_init(void)
 	return 0;
 }
 
-int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd)
+int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd, FILE* output)
 {
 	int pid;
 	int status;
@@ -91,6 +91,11 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd)
 		 * nonsensical).
 		 */
 		close(STDIN_FILENO);
+
+		int output_fd = fileno(output);
+		dup2(output_fd, STDOUT_FILENO);
+		dup2(output_fd, STDERR_FILENO);
+		close(output_fd);
 
 		execl("/bin/sh", "/bin/sh", "-e", "-c", cmd, NULL);
 		perror("execl");
