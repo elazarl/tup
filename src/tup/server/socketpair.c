@@ -1,3 +1,5 @@
+#define _XOPEN_SOURCE 600
+
 #include "tup/server.h"
 #include "tup/file.h"
 #include "tup/debug.h"
@@ -5,6 +7,7 @@
 #include "tup/db.h"
 #include "tup/lock.h"
 #include "tup/config.h"
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -57,20 +60,53 @@ int server_init(void)
 
 int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd, FILE* output)
 {
-	int pid;
+	int child_pid;
 	int status;
+	int master_fd, slave_fd;
+	char *slavedevice;
 
 	if(start_server(s) < 0) {
 		fprintf(stderr, "Error starting update server.\n");
 		return -1;
 	}
 
-	pid = fork();
-	if(pid < 0) {
+	// TODO(anatol) The pseudo-tty thing does not work very well for large amount of jobs (tup upd -j30). Why?
+	master_fd = posix_openpt(O_RDWR|O_NOCTTY);
+	if (master_fd == -1
+			|| grantpt(master_fd) == -1
+			|| unlockpt(master_fd) == -1
+			|| (slavedevice = ptsname(master_fd)) == NULL) {
+		perror("posix_openpt");
+		return -1;
+	}
+
+	child_pid = fork();
+	if(child_pid < 0) {
 		perror("fork");
 		return -1;
 	}
-	if(pid == 0) {
+
+	if(child_pid) {
+		/* TOASK(marf) why following code does not work?
+		int output_fd = fileno(output);
+		dup2(output_fd, master_fd);
+		close(output_fd);
+		*/
+		FILE *master_fp;
+		char buf[4096];
+
+		master_fp = fdopen(master_fd, "r");
+
+		while(1) {
+			size_t read_num = fread(buf, sizeof(char), sizeof(buf), master_fp);
+			if (read_num) {
+				fwrite(buf, sizeof(char), read_num, output);
+			} else {
+				// TODO (anatol): use feof/ferror here?
+				break;
+			}
+		}
+	} else {
 		struct sigaction sa = {
 			.sa_handler = SIG_IGN,
 			.sa_flags = SA_RESETHAND | SA_RESTART,
@@ -92,16 +128,24 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd, FILE
 		 */
 		close(STDIN_FILENO);
 
-		int output_fd = fileno(output);
-		dup2(output_fd, STDOUT_FILENO);
-		dup2(output_fd, STDERR_FILENO);
-		close(output_fd);
+		/* open slave end of pty */
+		slave_fd = open(slavedevice, O_RDWR|O_NOCTTY);
+		if (slave_fd < 0) {
+		      perror("slavedevice");
+		      return -1;
+		}
+
+		/* replace stdout/stderr with slave end of pty */
+		dup2(slave_fd, STDOUT_FILENO);
+		dup2(slave_fd, STDERR_FILENO);
+		close(master_fd);
+		close(slave_fd);
 
 		execl("/bin/sh", "/bin/sh", "-e", "-c", cmd, NULL);
 		perror("execl");
 		exit(1);
 	}
-	if(waitpid(pid, &status, 0) < 0) {
+	if(waitpid(child_pid, &status, 0) < 0) {
 		perror("waitpid");
 		return -1;
 	}

@@ -806,11 +806,18 @@ static void worker_ret(struct worker_thread *wt, int rc, FILE *output)
 static void dump_file_to_stdout(FILE* file) {
 	rewind(file);
 	char buf[4096];
-	while (!feof(file)) {
+	while (1) {
 		size_t read_num = fread(buf, sizeof(char), sizeof(buf), file);
-		if(read_num)
+		if(read_num) {
 			fwrite(buf, sizeof(char), read_num, stdout);
+		} else if (feof(file)) {
+			break;
+		} else if (ferror(file)) {
+			perror("fread");
+			break;
+		}
 	}
+
 	fclose(file);
 }
 
