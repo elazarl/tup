@@ -10,7 +10,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#ifdef __APPLE__
+#include <util.h>
+#else
 #include <pty.h>
+#endif
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
