@@ -93,6 +93,7 @@ struct worker_thread {
 	struct node *n;
 	struct node *retn;
 	int rc;
+	// TODO(anatol): find where stdout and stderr point to. If they both point to tty the use one buffer file, otherwise - two files.
 	FILE *output;
 	int quit;
 };

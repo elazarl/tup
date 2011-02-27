@@ -1,5 +1,3 @@
-#define _XOPEN_SOURCE 600
-
 #include "tup/server.h"
 #include "tup/file.h"
 #include "tup/debug.h"
@@ -12,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <pty.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -62,30 +61,20 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd, FILE
 {
 	int pid;
 	int status;
-	int master_fd, slave_fd;
-	char *slavedevice;
+	int masterfd;
+	char slavename[PATH_MAX+1];
 
 	if(start_server(s) < 0) {
 		fprintf(stderr, "Error starting update server.\n");
 		return -1;
 	}
 
-	// TODO(anatol) The pseudo-tty thing does not work very well for large amount of jobs (tup upd -j30). Why?
-	master_fd = posix_openpt(O_RDWR|O_NOCTTY);
-	if (master_fd == -1
-	    || grantpt(master_fd) == -1
-	    || unlockpt(master_fd) == -1
-	    || (slavedevice = ptsname(master_fd)) == NULL) {
-	  perror("posix_openpt");
-	  return -1;
-	}
-
-	pid = fork();
+	// TODO(anatol): check if tup's stdout is tty, if not - use old good fork()
+	pid = forkpty(&masterfd, slavename, NULL, NULL);
 	if(pid < 0) {
 		perror("fork");
 		return -1;
 	}
-
 	if(pid == 0) {
 		struct sigaction sa = {
 			.sa_handler = SIG_IGN,
@@ -108,44 +97,23 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd, FILE
 		 */
 		close(STDIN_FILENO);
 
-		/* open slave end of pty */
-		slave_fd = open(slavedevice, O_RDWR|O_NOCTTY);
-		if (slave_fd < 0) {
-		      perror("slavedevice");
-		      return -1;
-		}
-
-		/* replace stdout/stderr with slave end of pty */
-		dup2(slave_fd, STDOUT_FILENO);
-		dup2(slave_fd, STDERR_FILENO);
-		close(master_fd);
-		close(slave_fd);
+		int slavefd = open(slavename, O_WRONLY);
+		dup2(slavefd, STDOUT_FILENO);
+		dup2(slavefd, STDERR_FILENO);
+		close(slavefd);
 
 		execl("/bin/sh", "/bin/sh", "-e", "-c", cmd, NULL);
 		perror("execl");
 		exit(1);
 	} else {
-		/* TOASK(marf) why following code does not work?
-		int output_fd = fileno(output);
-		dup2(output_fd, master_fd);
-		close(output_fd);
-		*/
-		FILE *master_fp;
-		char buf[4096];
-
-		master_fp = fdopen(master_fd, "r");
-
-		while(1) {
-			size_t read_num = fread(buf, sizeof(char), sizeof(buf), master_fp);
-			if (read_num) {
-				fwrite(buf, sizeof(char), read_num, output);
-			} else {
-				// TODO (anatol): use feof/ferror here?
-				break;
-			}
-		}
+		// TOASK(marf) Is there better way to redirect
+		char buffer[4096];
+		int read_count;
+		while((read_count = read(masterfd,buffer,sizeof(buffer))) > 0)
+			// TODO(anatol): check result of write. Check ferror.
+			write(fileno(output),buffer,read_count);
+		close(masterfd);
 	}
-
 	if(waitpid(pid, &status, 0) < 0) {
 		perror("waitpid");
 		return -1;
