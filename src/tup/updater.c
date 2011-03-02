@@ -44,7 +44,7 @@ static void *update_work(void *arg);
 static void *todo_work(void *arg);
 static int update(struct node *n, struct server *s);
 static void tup_main_progress(const char *s);
-static void show_progress(int sum, int total, struct node *n);
+static void show_progress(int sum, int total, struct node *n, int is_error);
 
 static int do_keep_going;
 static int num_jobs;
@@ -284,7 +284,7 @@ static int delete_files(struct graph *g)
 				do_delete = 0;
 			}
 
-			show_progress(num_deleted, g->delete_count, &tmpn);
+			show_progress(num_deleted, g->delete_count, &tmpn, 0);
 			num_deleted++;
 
 			/* Only delete if the file wasn't modified (t6031) */
@@ -301,7 +301,7 @@ static int delete_files(struct graph *g)
 		free(te);
 	}
 	if(g->delete_count) {
-		show_progress(g->delete_count, g->delete_count, NULL);
+		show_progress(g->delete_count, g->delete_count, NULL, 0);
 	}
 	return 0;
 }
@@ -723,7 +723,7 @@ check_empties:
 			active--;
 
 			if(n->tent->type == g->count_flags) {
-				show_progress(num_processed, g->num_nodes, n);
+				show_progress(num_processed, g->num_nodes, n, wt->rc != 0);
 				flush_buffer(wt->out, stdout);
 				if (wt->out != wt->err) {
 					// We have separate buffers for stdout and stderr
@@ -766,7 +766,7 @@ keep_going:
 		}
 		goto out;
 	}
-	show_progress(num_processed, g->num_nodes, NULL);
+	show_progress(num_processed, g->num_nodes, NULL, 0);
 	rc = 0;
 out:
 	for(x=0; x<jobs; x++) {
@@ -1085,14 +1085,13 @@ static void tup_main_progress(const char *s)
 	cur_phase++;
 }
 
-static void show_progress(int sum, int total, struct node *n)
+static void show_progress(int sum, int total, struct node *n, int is_error)
 {
 	if(total) {
-		const int max = 11;
 		const char *color = "";
 		char *name;
 		int name_sz = 0;
-		int fill;
+		const int max = 11;
 		char buf[12];
 
 		/* If it's a good enough limit for Final Fantasy VII, it's good
@@ -1103,7 +1102,6 @@ static void show_progress(int sum, int total, struct node *n)
 		} else {
 			snprintf(buf, sizeof(buf), " %4i/%-4i ", sum, total);
 		}
-		fill = max * sum / total;
 
 		if(n) {
 			name = n->tent->name.s;
@@ -1118,7 +1116,12 @@ static void show_progress(int sum, int total, struct node *n)
 			}
 
 			color = color_type(n->tent->type);
-			printf("[%s%s%.*s%s%.*s] ", color, color_append_reverse(), fill, buf, color_end(), max-fill, buf+fill);
+			if (is_error) {
+				printf("[%s%s%.*s%s] ", color_error(), color_append_reverse(), max, buf, color_end());
+			} else {
+				int fill = max * sum / total;
+				printf("[%s%s%.*s%s%.*s] ", color, color_append_reverse(), fill, buf, color_end(), max-fill, buf+fill);
+			}
 			if(n->tent && n->tent->parent) {
 				print_tup_entry(stdout, n->tent->parent);
 			}
