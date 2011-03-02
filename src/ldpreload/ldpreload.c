@@ -42,6 +42,8 @@ static int (*s_stat64)(const char *name, struct stat64 *buf);
 static int (*s_xstat64)(int vers, const char *name, struct stat64 *buf);
 static int (*s_lxstat64)(int vers, const char *path, struct stat64 *buf);
 
+static int (*s_isatty)(int fd);
+
 #define WRAP(ptr, name) \
 	if(!ptr) { \
 		ptr = dlsym(RTLD_NEXT, name); \
@@ -401,4 +403,26 @@ static int ignore_file(const char *file)
 	if(strncmp(file, "/dev/", 5) == 0)
 		return 1;
 	return 0;
+}
+
+// TOASK(marf): move it to a separate file?
+static int isatty_var = -1;
+
+int isatty(int fd) {
+	if (isatty_var == -1) {
+		char *value = getenv("TUP_ISATTY");
+		if (!value) {
+			fprintf(stderr, "TUP_ISATTY env var is not set\n");
+			return 0;
+		}
+		isatty_var = atoi(value);
+	}
+
+	if (fd == STDOUT_FILENO)
+		return isatty_var & 1 ? 1 : 0;
+	if (fd == STDERR_FILENO)
+		return isatty_var & 2 ? 1 : 0;
+
+	WRAP(s_isatty, "isatty");
+	return s_isatty(fd);
 }

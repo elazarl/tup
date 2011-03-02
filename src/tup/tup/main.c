@@ -13,6 +13,7 @@
 #include "tup/pel_group.h"
 #include "tup/updater.h"
 #include "tup/graph.h"
+#include "tup/stdio.h"
 #include "tup/init.h"
 #include "tup/compat.h"
 #include "tup/version.h"
@@ -61,6 +62,9 @@ int main(int argc, char **argv)
 	if(!isatty(STDOUT_FILENO)) {
 		color_disable();
 	}
+
+	thread_stdout = stdout;
+	thread_stderr = stderr;
 
 	if(strcmp(argv[1], "init") == 0) {
 		argc--;

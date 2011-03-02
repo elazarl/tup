@@ -5,6 +5,7 @@
 #include "tup/db.h"
 #include "tup/lock.h"
 #include "tup/config.h"
+#include "tup/stdio.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,6 +42,10 @@ static struct sigaction sigact = {
 static int sig_quit = 0;
 static char ldpreload_path[LDPRELOAD_PATH_SIZE];
 
+enum IS_ATTY {STDOUT_IS_TTY = 1, STDERR_IS_TTY = 2};
+// This var is a number. 0th bit is set if stdout is tty, 1st bit for stderr.
+static char isatty_env[5];
+
 int server_init(void)
 {
 	if(snprintf(ldpreload_path, sizeof(ldpreload_path),
@@ -52,6 +57,16 @@ int server_init(void)
 	sigemptyset(&sigact.sa_mask);
 	sigaction(SIGINT, &sigact, NULL);
 	sigaction(SIGTERM, &sigact, NULL);
+
+	int is_atty = 0;
+	if (isatty(STDOUT_FILENO)) {
+		is_atty |= STDOUT_IS_TTY;
+	}
+	if (isatty(STDERR_FILENO)) {
+		is_atty |= STDERR_IS_TTY;
+	}
+	snprintf(isatty_env, sizeof(isatty_env), "%d", is_atty);
+
 	return 0;
 }
 
@@ -61,7 +76,7 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd)
 	int status;
 
 	if(start_server(s) < 0) {
-		fprintf(stderr, "Error starting update server.\n");
+		fprintf(thread_stderr, "Error starting update server.\n");
 		return -1;
 	}
 
@@ -92,6 +107,11 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd)
 		 */
 		close(STDIN_FILENO);
 
+		fflush(thread_stdout);
+		fflush(thread_stderr);
+		dup2(fileno(thread_stdout), STDOUT_FILENO);
+		dup2(fileno(thread_stderr), STDERR_FILENO);
+
 		execl("/bin/sh", "/bin/sh", "-e", "-c", cmd, NULL);
 		perror("execl");
 		exit(1);
@@ -111,7 +131,7 @@ int server_exec(struct server *s, int vardict_fd, int dfd, const char *cmd)
 		s->signalled = 1;
 		s->exit_sig = WTERMSIG(status);
 	} else {
-		fprintf(stderr, "tup error: Expected exit status to be WIFEXITED or WIFSIGNALED. Got: %i\n", status);
+		fprintf(thread_stderr, "tup error: Expected exit status to be WIFEXITED or WIFSIGNALED. Got: %i\n", status);
 		return -1;
 	}
 	return 0;
@@ -138,6 +158,8 @@ static void server_setenv(struct server *s, int vardict_fd)
 #else
 	setenv("LD_PRELOAD", ldpreload_path, 1);
 #endif
+
+	setenv("TUP_ISATTY", isatty_env, 1);
 }
 
 static int start_server(struct server *s)
@@ -207,20 +229,20 @@ static void *message_thread(void *arg)
 			continue;
 
 		if(event.len >= (signed)sizeof(s->file1) - 1) {
-			fprintf(stderr, "Error: Size of %i bytes is longer than the max filesize\n", event.len);
+			fprintf(thread_stderr, "Error: Size of %i bytes is longer than the max filesize\n", event.len);
 			return (void*)-1;
 		}
 		if(event.len2 >= (signed)sizeof(s->file2) - 1) {
-			fprintf(stderr, "Error: Size of %i bytes is longer than the max filesize\n", event.len2);
+			fprintf(thread_stderr, "Error: Size of %i bytes is longer than the max filesize\n", event.len2);
 			return (void*)-1;
 		}
 
 		if(recvall(s->sd[0], s->file1, event.len) < 0) {
-			fprintf(stderr, "Error: Did not recv all of file1 in access event.\n");
+			fprintf(thread_stderr, "Error: Did not recv all of file1 in access event.\n");
 			return (void*)-1;
 		}
 		if(recvall(s->sd[0], s->file2, event.len2) < 0) {
-			fprintf(stderr, "Error: Did not recv all of file2 in access event.\n");
+			fprintf(thread_stderr, "Error: Did not recv all of file2 in access event.\n");
 			return (void*)-1;
 		}
 
